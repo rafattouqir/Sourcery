@@ -1,5 +1,6 @@
 // swift-tools-version:5.8
 
+import CompilerPluginSupport
 import PackageDescription
 import Foundation
 
@@ -218,6 +219,7 @@ var targets: [Target] = [
     ),
     .plugin(
         name: "SourceryCommandPlugin",
+        // capability: .buildTool(),
         capability: .command(
             intent: .custom(
                 verb: "sourcery-command",

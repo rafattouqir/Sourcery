@@ -3,25 +3,41 @@ import Foundation
 
 @main
 struct SourceryCommandPlugin {
-    private func run(_ sourcery: String, withConfig configFilePath: String, cacheBasePath: String) throws {
-        let sourceryURL = URL(fileURLWithPath: sourcery)
-        
-        let process = Process()
-        process.executableURL = sourceryURL
-        process.arguments = [
+    @discardableResult
+    private func run(_ context: CommonPluginContext, withConfig configFilePath: String, cacheBasePath: String) throws -> Command{
+        let sourcery = try context.tool(named: "SourceryExecutable").path.string
+        let executable = try context.tool(named: "SourceryExecutable")
+        let arguments = [
             "--config",
             configFilePath,
             "--cacheBasePath",
             cacheBasePath
         ]
+
+        let pluginWorkDirectory = context.pluginWorkDirectory
+        let outputPath: Path = pluginWorkDirectory.appending("Output")
+
+        let sourceryURL = URL(fileURLWithPath: sourcery)
         
+        let process = Process()
+        process.executableURL = sourceryURL
+        process.arguments = arguments
+
         try process.run()
         process.waitUntilExit()
-        
+
         let gracefulExit = process.terminationReason == .exit && process.terminationStatus == 0
         if !gracefulExit {
             throw "🛑 The plugin execution failed with reason: \(process.terminationReason.rawValue) and status: \(process.terminationStatus) "
         }
+
+        return Command.prebuildCommand(
+                displayName: "SwiftLint",
+                executable: executable.path,
+                arguments: arguments,
+                environment: [:],
+                outputFilesDirectory: outputPath
+        )
     }
 }
 
@@ -32,15 +48,37 @@ extension SourceryCommandPlugin: CommandPlugin {
         // Run one per target
         for target in context.package.targets {
             let configFilePath = target.directory.appending(subpath: ".sourcery.yml").string
-            let sourcery = try context.tool(named: "SourceryExecutable").path.string
-            
+
             guard FileManager.default.fileExists(atPath: configFilePath) else {
                 Diagnostics.warning("⚠️ Could not find `.sourcery.yml` for target \(target.name)")
                 continue
             }
             
-            try run(sourcery, withConfig: configFilePath, cacheBasePath: context.pluginWorkDirectory.string)
+            try run(context, withConfig: configFilePath, cacheBasePath: context.pluginWorkDirectory.string)
         }
+    }
+}
+
+// MARK: - BuildToolPlugin
+
+extension SourceryCommandPlugin: BuildToolPlugin {
+    func createBuildCommands(
+        context: PluginContext,
+        target: Target
+    ) async throws -> [Command] {
+        var commands = [Command]()
+        // Run one per target
+        for target in context.package.targets {
+            let configFilePath = target.directory.appending(subpath: ".sourcery.yml").string
+            guard FileManager.default.fileExists(atPath: configFilePath) else {
+                Diagnostics.warning("⚠️ Could not find `.sourcery.yml` for target \(target.name)")
+                continue
+            }
+            
+            commands.append(try run(context, withConfig: configFilePath, cacheBasePath: context.pluginWorkDirectory.string))
+        }
+
+        return commands
     }
 }
 
@@ -61,13 +99,19 @@ extension SourceryCommandPlugin: XcodeCommandPlugin {
                 Diagnostics.warning("⚠️ Could not find `.sourcery.yml` in Xcode's input file list")
                 return
             }
-            let sourcery = try context.tool(named: "SourceryExecutable").path.string
-            
-            try run(sourcery, withConfig: configFilePath, cacheBasePath: context.pluginWorkDirectory.string)
+            try run(context, withConfig: configFilePath, cacheBasePath: context.pluginWorkDirectory.string)
         }
     }
 }
 #endif
+
+protocol CommonPluginContext {
+    func tool(named name: String) throws -> PluginContext.Tool
+    var pluginWorkDirectory: Path { get }
+}
+extension XcodePluginContext: CommonPluginContext {}
+extension PluginContext: CommonPluginContext {}
+
 
 extension String: LocalizedError {
     public var errorDescription: String? { return self }
